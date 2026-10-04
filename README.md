@@ -1,5 +1,9 @@
 # KOAssistant
 
+Local transport hardening on this branch is documented in
+[HTTPS_SECURITY.md](HTTPS_SECURITY.md), including certificate verification,
+proxy behavior, compatibility limits, and credential-free regression tests.
+
 [![GitHub Release](https://img.shields.io/github/v/release/zeeyado/koassistant.koplugin)](https://github.com/zeeyado/koassistant.koplugin/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/github/license/zeeyado/koassistant.koplugin)](LICENSE)
 [![AI-translated](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhosted.weblate.org%2Fapi%2Fprojects%2Fkoassistant%2Fstatistics%2F&query=%24.fuzzy_percent&suffix=%25&label=AI-translated&color=8ab4f8&cacheSeconds=3600)](https://hosted.weblate.org/engage/koassistant/)

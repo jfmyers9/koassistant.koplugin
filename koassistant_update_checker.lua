@@ -1163,7 +1163,7 @@ local function fetchWithAbsoluteTimeout(url, timeout, callback)
                 }
 
                 local req_ok, code = pcall(function()
-                    return select(2, http.request(request))
+                    return select(2, require("koassistant_https").publicGet(request))
                 end)
 
                 if not req_ok or (code and code ~= 200) then
@@ -1425,7 +1425,7 @@ local function downloadFile(url, dest_path, callback)
                 end
 
                 local req_ok, code = pcall(function()
-                    return select(2, subprocess_https.request{
+                    return select(2, require("koassistant_https").publicGet{
                         url = url,
                         method = "GET",
                         headers = {

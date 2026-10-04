@@ -6,6 +6,7 @@ local socket = require("socket")
 local https = require("ssl.https")
 local ffi = require("ffi")
 local ffiutil = require("ffi/util")
+local SecureHTTPS = require("koassistant_https")
 
 local BaseHandler = {
     trap_widget = nil,  -- widget to trap the request (for dismissable requests)
@@ -262,6 +263,10 @@ function BaseHandler.resolveForSubprocess(url)
     local port = tonumber(url:match("^https?://[^/:]+:(%d+)"))
         or (scheme == "https" and 443 or 80)
     if not host then return nil end
+    if scheme == "https" then
+        local proxy_host, proxy_port = SecureHTTPS.proxy()
+        host, port = proxy_host or host, proxy_port or port
+    end
 
     local resolved_ip
 
@@ -327,51 +332,47 @@ function BaseHandler.connectSSLInSubprocess(resolved_ip, hostname, port, timeout
         socketutil:set_timeout(timeout, -1)
     end
 
-    local ssl = require("ssl")
-    local raw_sock = socket.tcp()
-    raw_sock:settimeout(timeout)
+    return SecureHTTPS.connect(hostname, port, timeout, function(connect_host, connect_port)
+        local raw_sock = assert(socket.tcp())
+        raw_sock:settimeout(timeout)
 
-    if resolved_ip then
-        -- FFI direct connect: bypass getaddrinfo entirely.
-        -- Create a connected IPv4 socket via FFI, then inject its fd
-        -- into the LuaSocket object.
-        require("ffi/posix_h")
-        pcall(ffi.cdef, "int connect(int, const struct sockaddr *, unsigned int);")
+        if resolved_ip then
+            -- FFI direct connect: bypass getaddrinfo entirely.
+            -- Create a connected IPv4 socket via FFI, then inject its fd
+            -- into the LuaSocket object.
+            require("ffi/posix_h")
+            pcall(ffi.cdef, "int connect(int, const struct sockaddr *, unsigned int);")
 
-        local ffi_fd = ffi.C.socket(ffi.C.AF_INET, 1, 0)  -- 1 = SOCK_STREAM
-        if ffi_fd < 0 then
-            error("socket() failed: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+            local ffi_fd = ffi.C.socket(ffi.C.AF_INET, 1, 0)  -- 1 = SOCK_STREAM
+            if ffi_fd < 0 then
+                error("socket() failed: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+            end
+
+            local addr = ffi.new("struct sockaddr_in")
+            addr.sin_family = ffi.C.AF_INET
+            addr.sin_port = ffi.C.htons(connect_port)
+            ffi.C.inet_aton(resolved_ip, addr.sin_addr)
+            local ret = ffi.C.connect(ffi_fd, ffi.cast("const struct sockaddr *", addr), ffi.sizeof(addr))
+            if ret ~= 0 then
+                ffi.C.close(ffi_fd)
+                error("connect() failed: " .. ffi.string(ffi.C.strerror(ffi.errno())))
+            end
+
+            -- LuaSocket creates sockets lazily (fd = -1 until connect), so use setfd
+            raw_sock:setfd(ffi_fd)
+            -- setfd alone leaves tcp{master}; CONNECT needs send/receive before
+            -- ssl.wrap takes ownership. Adopt the connected-client metatable
+            -- without calling LuaSocket connect (which re-enters DNS after fork).
+            local client_mt = debug.getregistry()["tcp{client}"]
+            if not client_mt then raw_sock:close(); error("LuaSocket client type unavailable") end
+            debug.setmetatable(raw_sock, client_mt)
+        else
+            -- Fallback: use LuaSocket connect (may hang on macOS after fork)
+            local ok, err = raw_sock:connect(connect_host, connect_port)
+            if not ok then raw_sock:close(); error(err) end
         end
-
-        local addr = ffi.new("struct sockaddr_in")
-        addr.sin_family = ffi.C.AF_INET
-        addr.sin_port = ffi.C.htons(port)
-        ffi.C.inet_aton(resolved_ip, addr.sin_addr)
-        local ret = ffi.C.connect(ffi_fd, ffi.cast("const struct sockaddr *", addr), ffi.sizeof(addr))
-        if ret ~= 0 then
-            ffi.C.close(ffi_fd)
-            error("connect() failed: " .. ffi.string(ffi.C.strerror(ffi.errno())))
-        end
-
-        -- LuaSocket creates sockets lazily (fd = -1 until connect), so use setfd
-        raw_sock:setfd(ffi_fd)
-    else
-        -- Fallback: use LuaSocket connect (may hang on macOS after fork)
-        raw_sock:connect(hostname, port)
-    end
-
-    -- SSL wrap + handshake
-    local ssl_sock = ssl.wrap(raw_sock, {
-        mode = "client",
-        protocol = "any",
-        options = {"all", "no_sslv2", "no_sslv3", "no_tlsv1"},
-        verify = "none",
-    })
-    ssl_sock:sni(hostname)
-    ssl_sock:settimeout(timeout)
-    ssl_sock:dohandshake()
-
-    return ssl_sock
+        return raw_sock
+    end)
 end
 
 --- Read HTTP response body with chunked TE support, writing to pipe fd.
@@ -673,7 +674,7 @@ function BaseHandler.fetchInSubprocess(url, opts)
         request.source = ltn12.source.string(opts.body)
     end
     local ok, code, resp_headers = pcall(function()
-        return socket.skip(1, http.request(request))
+        return socket.skip(1, SecureHTTPS.request(request))
     end)
     if not ok then
         return nil, tostring(code)
@@ -868,7 +869,7 @@ function BaseHandler:backgroundRequest(url, headers, body)
 
                 local ok, code, _headers, status
                 ok, code, _headers, status = pcall(function()
-                    return socket.skip(1, http.request(request))
+                    return socket.skip(1, SecureHTTPS.request(request))
                 end)
 
                 -- Rate-limit headers: on this path the body has already streamed into
